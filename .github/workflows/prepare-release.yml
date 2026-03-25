@@ -51,4 +51,4 @@ jobs:
         run: |
           gh release create "v${{ inputs.version }}" \
             --title "Vigil v${{ inputs.version }}" \
-            --notes-file CHANGELOG_RELEASE.md
+            --notes-file "${{ steps.changelog.outputs.path }}"
