@@ -1,86 +1,62 @@
 name: Release
 
 on:
-  release:
-    types: [created]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version number (e.g. 1.2.3)"
+        required: true
 
 permissions:
   contents: write
 
 jobs:
-  build-mac:
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - aarch64-apple-darwin
-          - x86_64-apple-darwin
-
-    runs-on: macos-latest
+  prepare:
+    runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v6
         with:
-          targets: ${{ matrix.target }}
+          fetch-depth: 0
 
-      - name: Install Node.js
-        uses: actions/setup-node@v4
+      - name: Update package.json version
+        run: jq --arg v "${{ inputs.version }}" '.version = $v' package.json > tmp && mv tmp package.json
+
+      - name: Update Cargo.toml version
+        run: sed -i 's/^version = ".*"/version = "${{ inputs.version }}"/' src-tauri/Cargo.toml
+
+      - name: Update tauri.conf.json version
+        run: jq --arg v "${{ inputs.version }}" '.version = $v' src-tauri/tauri.conf.json > tmp && mv tmp src-tauri/tauri.conf.json
+
+      - name: Generate changelog
+        id: changelog
+        uses: orhun/git-cliff-action@v4
         with:
-          node-version: 20
-          cache: npm
+          config: cliff.toml
+          args: --unreleased --tag "v${{ inputs.version }}" --strip header
+          output: CHANGELOG_RELEASE.md
 
-      - name: Install frontend dependencies
-        run: npm ci
+      - name: Commit and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json
+          git commit -m "chore: bump version to ${{ inputs.version }}"
+          git tag "v${{ inputs.version }}"
+          git push origin main
+          git push origin "v${{ inputs.version }}"
 
-      - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
+      - name: Create GitHub release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          # APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          # APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          # APPLE_ID: ${{ secrets.APPLE_ID }}
-          # APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: Vigil ${{ github.ref_name }}
-          releaseBody: ${{ github.event.release.body }}
-          releaseDraft: false
-          prerelease: false
-          args: --target ${{ matrix.target }} --bundles dmg
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ inputs.version }}" \
+            --title "Vigil v${{ inputs.version }}" \
+            --notes-file "${{ steps.changelog.outputs.path }}"
 
-  build-windows:
-    runs-on: windows-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Build frontend
-        run: npm run build
-
-      - name: Build portable EXE
-        run: cargo build --release
-        working-directory: src-tauri
-
-      - name: Upload portable EXE to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: src-tauri/target/release/vigil.exe
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  build:
+    needs: prepare
+    uses: ./.github/workflows/build.yml
+    with:
+      tag: v${{ inputs.version }}
+    secrets: inherit
