@@ -1,4 +1,4 @@
-# gh-pr-tracker — Context
+# Vigil — Context
 
 ## What it is
 A native desktop utility (Tauri 2) that polls GitHub for open PRs across multiple repositories and renders them in a compact, always-accessible window. Mac-first; also builds a portable Windows exe.

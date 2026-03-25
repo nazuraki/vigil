@@ -1,10 +1,10 @@
 [package]
-name = "gh-pr-tracker"
+name = "vigil"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "gh_pr_tracker_lib"
+name = "vigil_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
