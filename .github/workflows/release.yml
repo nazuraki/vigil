@@ -68,8 +68,12 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build Tauri app (portable)
-        run: npm run tauri build -- --bundles none
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build portable EXE
+        run: cargo build --release
+        working-directory: src-tauri
 
       - name: Upload portable EXE to release
         uses: softprops/action-gh-release@v2
