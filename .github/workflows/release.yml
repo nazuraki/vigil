@@ -33,8 +33,7 @@ jobs:
         uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
-          args: --unreleased --tag "v${{ inputs.version }}" --strip header
-          output: CHANGELOG_RELEASE.md
+          args: --unreleased --tag "v${{ inputs.version }}" --strip header --output CHANGELOG_RELEASE.md
 
       - name: Commit and tag
         run: |
@@ -52,7 +51,7 @@ jobs:
         run: |
           gh release create "v${{ inputs.version }}" \
             --title "Vigil v${{ inputs.version }}" \
-            --notes-file "${{ steps.changelog.outputs.path }}"
+            --notes-file CHANGELOG_RELEASE.md
 
   build:
     needs: prepare
