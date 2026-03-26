@@ -41,7 +41,7 @@ async function openSettings() {
 }
 
 export default function PrList() {
-  const { prs, loading, error, lastSync, hasConfig, refresh, reload } = useGitHub()
+  const { prs, loading, error, lastSync, hasConfig, isStale, refresh, reload } = useGitHub()
 
   // Listen for config changes saved from the settings window
   useEffect(() => {
@@ -109,7 +109,7 @@ export default function PrList() {
           </div>
         )}
 
-        {hasConfig && !loading && prs.length === 0 && !error && (
+        {hasConfig && !loading && prs.length === 0 && !error && !isStale && (
           <div className="flex flex-col items-center justify-center h-full gap-2 text-center">
             <span className="material-symbols-outlined text-3xl text-on-surface-variant/30">check_circle</span>
             <p className="text-on-surface-variant/60 text-xs">No open pull requests</p>
@@ -142,7 +142,11 @@ export default function PrList() {
           )}
         </div>
         <span>
-          {lastSync
+          {isStale && lastSync
+            ? `stale · last synced ${lastSync.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+            : isStale
+            ? 'refresh failed'
+            : lastSync
             ? `synced ${lastSync.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
             : loading ? 'syncing…' : '—'}
         </span>
