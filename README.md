@@ -60,8 +60,32 @@ The disk image will be in `src-tauri/target/release/bundle/dmg/Vigil_<version>_a
 
 On first launch, open Settings and enter:
 
-- **GitHub PAT** — personal access token with `repo` scope
+- **GitHub PAT** — personal access token (see [GitHub Token Requirements](#github-token-requirements) below)
 - **Repositories** — one or more `owner/repo` entries to watch
 - **Polling interval** — how often to check (default: 5 minutes)
 
 Config is stored in the OS app data directory as `config.json`.
+
+## GitHub Token Requirements
+
+Vigil supports both classic and fine-grained GitHub Personal Access Tokens.
+Create one at <https://github.com/settings/tokens>.
+
+### Classic PAT
+
+Grant the **`repo`** scope. This gives Vigil read access to pull requests, commits, and CI check statuses.
+
+### Fine-grained PAT (recommended)
+
+Fine-grained tokens are scoped to specific repositories, so you must add **every repository you intend to track** when creating the token.
+
+Under **Repository permissions**, set the following to **Read-only**:
+
+| Permission | Why it's needed |
+|---|---|
+| **Pull requests** | List open PRs and their metadata |
+| **Commits** | Fetch commit statuses and CI check results |
+
+All other permissions can remain at their default (no access).
+
+> **Note:** Because fine-grained PATs are repository-scoped, you will need to edit the token (or create a new one) whenever you add a new repository to Vigil's tracked list.
