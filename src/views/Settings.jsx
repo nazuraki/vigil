@@ -112,7 +112,10 @@ export default function Settings() {
             />
           </div>
           <p className="mt-1 text-[0.625rem] text-on-surface-variant/40">
-            Needs <span className="font-mono">repo</span> scope. Stored locally, never transmitted.
+            Classic PAT: <span className="font-mono">repo</span> scope.{' '}
+            Fine-grained PAT: <span className="font-mono">Pull requests</span> +{' '}
+            <span className="font-mono">Commits</span> (read-only) per tracked repo.{' '}
+            Stored locally, never transmitted.
           </p>
         </section>
 
