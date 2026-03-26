@@ -17,11 +17,17 @@ export function useGitHub() {
   const [error, setError]         = useState(null)
   const [lastSync, setLastSync]   = useState(null)
   const [hasConfig, setHasConfig] = useState(true)
+  const [isStale, setIsStale]     = useState(false)
   const intervalRef               = useRef(null)
 
   // Keyed by `${repoKey}#${number}` → { sha }
   // Null until the first successful fetch — prevents notifying on initial load.
   const prevPrsRef = useRef(null)
+
+  // Last known-good PR list — used to preserve the displayed list when a poll
+  // cycle fails entirely (network error, all repos unreachable, etc.) so that
+  // PRs never disappear due to transient failures.
+  const lastGoodPrsRef = useRef(null)
 
   const fetchPRs = useCallback(async () => {
     const config = await loadConfig()
@@ -29,6 +35,7 @@ export function useGitHub() {
     if (!config.token || !config.repos?.length) {
       setHasConfig(false)
       setPrs([])
+      lastGoodPrsRef.current = null
       return
     }
     setHasConfig(true)
@@ -36,12 +43,14 @@ export function useGitHub() {
     setError(null)
 
     try {
-      const octokit = new Octokit({ auth: config.token })
-      const allPrs  = []
+      const octokit     = new Octokit({ auth: config.token })
+      const allPrs      = []
+      let   anySucceeded = false
 
       for (const { owner, repo } of config.repos) {
         try {
           const pulls = await fetchPulls(octokit, owner, repo)
+          anySucceeded = true
           for (const pr of pulls) {
             const ciStatus = await fetchCiStatus(octokit, owner, repo, pr.head.sha)
             allPrs.push({ ...pr, _repoKey: `${owner}/${repo}`, _ciStatus: ciStatus })
@@ -49,6 +58,18 @@ export function useGitHub() {
         } catch (repoErr) {
           console.warn(`Failed to fetch ${owner}/${repo}:`, repoErr.message)
         }
+      }
+
+      // If not a single repo call succeeded, treat this cycle as a failure and
+      // keep the last known-good list visible rather than showing an empty list.
+      if (!anySucceeded && config.repos.length > 0) {
+        setError('Could not reach GitHub — showing last known data')
+        setIsStale(true)
+        // Restore previous good list if we have one
+        if (lastGoodPrsRef.current !== null) {
+          setPrs(lastGoodPrsRef.current)
+        }
+        return
       }
 
       allPrs.sort(sortPrs)
@@ -59,10 +80,19 @@ export function useGitHub() {
       }
       prevPrsRef.current = new Map(allPrs.map(pr => [`${pr._repoKey}#${pr.number}`, pr]))
 
+      // Commit the fresh list as the new known-good baseline
+      lastGoodPrsRef.current = allPrs
+      setIsStale(false)
       setPrs(allPrs)
       setLastSync(new Date())
     } catch (err) {
+      // Outer catch: something unexpected went wrong (auth failure, etc.)
+      // Surface the error but preserve whatever was previously displayed.
       setError(fmtError(err))
+      setIsStale(true)
+      if (lastGoodPrsRef.current !== null) {
+        setPrs(lastGoodPrsRef.current)
+      }
     } finally {
       setLoading(false)
     }
@@ -82,12 +112,13 @@ export function useGitHub() {
 
   const reload = useCallback(async () => {
     etagCache.clear()
-    prevPrsRef.current = null   // reset so next fetch re-establishes baseline
+    prevPrsRef.current    = null   // reset so next fetch re-establishes baseline
+    lastGoodPrsRef.current = null  // clear preserved list so a fresh one is committed
     await fetchPRs()
     await setupPolling()
   }, [fetchPRs, setupPolling])
 
-  return { prs, loading, error, lastSync, hasConfig, refresh: fetchPRs, reload }
+  return { prs, loading, error, lastSync, hasConfig, isStale, refresh: fetchPRs, reload }
 }
 
 // ─── notification diff ───────────────────────────────────────────────────────
@@ -144,14 +175,17 @@ async function diffAndNotify(freshPrs, prevMap) {
 
 /**
  * Fetch open PRs for a repo with ETag caching.
- * Uses per_page:100 (covers all but the most PR-heavy monorepos).
+ * Iterates all pages (per_page: 100) so repos with >100 open PRs are fully
+ * covered — no PRs are silently dropped.
  * Returns cached data unchanged on 304.
  */
 async function fetchPulls(octokit, owner, repo) {
   const key    = `pulls:${owner}/${repo}`
   const cached = etagCache.get(key)
 
-  const response = await withRateLimit(() =>
+  // Fast path: single-page fetch with ETag.  If the response is 304 we know
+  // nothing changed, so return the full cached list without re-paginating.
+  const firstResponse = await withRateLimit(() =>
     octokit.request('GET /repos/{owner}/{repo}/pulls', {
       owner, repo,
       state: 'open', sort: 'updated', per_page: 100,
@@ -159,16 +193,35 @@ async function fetchPulls(octokit, owner, repo) {
     })
   )
 
-  if (response.status === 304) return cached.data   // nothing changed
+  if (firstResponse.status === 304) return cached.data   // nothing changed
 
-  const etag = response.headers?.etag
-  if (etag) etagCache.set(key, { etag, data: response.data })
-  return response.data
+  let allPulls = [...firstResponse.data]
+
+  // Follow subsequent pages when there are more than 100 open PRs.
+  // The Link header's `rel="next"` url is parsed by Octokit automatically via
+  // the paginate helper, but since we need ETag support on the first page we
+  // drive pagination manually here.
+  const linkHeader = firstResponse.headers?.link ?? ''
+  let nextUrl = parseLinkNext(linkHeader)
+
+  while (nextUrl) {
+    const pageResp = await withRateLimit(() =>
+      octokit.request(`GET ${nextUrl}`)
+    )
+    allPulls = allPulls.concat(pageResp.data)
+    nextUrl  = parseLinkNext(pageResp.headers?.link ?? '')
+  }
+
+  const etag = firstResponse.headers?.etag
+  if (etag) etagCache.set(key, { etag, data: allPulls })
+  return allPulls
 }
 
 /**
  * Fetch CI check status for a commit SHA with ETag caching.
  * CI results are immutable once complete, so cache hits are common.
+ * Failures are isolated — a bad check-run fetch leaves the PR in the list
+ * with an 'unknown' CI status rather than dropping the PR entirely.
  */
 async function fetchCiStatus(octokit, owner, repo, sha) {
   const key    = `checks:${owner}/${repo}/${sha}`
@@ -190,6 +243,9 @@ async function fetchCiStatus(octokit, owner, repo, sha) {
     return status
   } catch (err) {
     if (err.status === 304 && cached) return cached.data
+    // Do NOT re-throw — a failed CI fetch must never remove the PR from the
+    // list.  Fall back to 'unknown' so the card is still rendered.
+    console.warn(`CI status fetch failed for ${owner}/${repo}@${sha}:`, err.message)
     return 'unknown'
   }
 }
@@ -254,6 +310,17 @@ function fmtError(err) {
   }
   if (err.status === 404) return 'Repository not found (check name or token scope)'
   return err.message
+}
+
+/**
+ * Parse the `rel="next"` URL out of a GitHub Link header.
+ * Returns null when there is no next page.
+ */
+function parseLinkNext(linkHeader) {
+  if (!linkHeader) return null
+  // Link header format: <url>; rel="next", <url>; rel="last"
+  const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/)
+  return match ? match[1] : null
 }
 
 function sleep(ms) {
