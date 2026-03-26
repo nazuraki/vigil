@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { loadConfig, saveConfig } from '../store'
+import { loadConfig, saveConfig, sortRepos } from '../store'
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 const isMac   = isTauri && typeof navigator !== 'undefined' && navigator.platform.startsWith('Mac')
@@ -23,7 +23,8 @@ export default function Settings() {
   useEffect(() => {
     loadConfig().then(cfg => {
       setToken(cfg.token || '')
-      setRepos(cfg.repos || [])
+      // loadConfig already sorts, but sortRepos here makes the guarantee explicit
+      setRepos(sortRepos(cfg.repos || []))
       setInterval(cfg.pollingInterval || 300_000)
     })
   }, [])
@@ -58,7 +59,8 @@ export default function Settings() {
       setError('Already tracked')
       return
     }
-    setRepos(prev => [...prev, { owner, repo }])
+    // Insert the new repo and immediately sort so the list re-renders in order
+    setRepos(prev => sortRepos([...prev, { owner, repo }]))
     setRepoInput('')
     setError('')
     setIsDirty(true)
