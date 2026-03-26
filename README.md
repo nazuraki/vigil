@@ -77,8 +77,6 @@ Grant the **`repo`** scope. This gives Vigil read access to pull requests, commi
 
 ### Fine-grained PAT (recommended)
 
-Fine-grained tokens are scoped to specific repositories, so you must add **every repository you intend to track** when creating the token.
-
 Under **Repository permissions**, set the following to **Read-only**:
 
 | Permission | Why it's needed |
@@ -87,5 +85,3 @@ Under **Repository permissions**, set the following to **Read-only**:
 | **Commits** | Fetch commit statuses and CI check results |
 
 All other permissions can remain at their default (no access).
-
-> **Note:** Because fine-grained PATs are repository-scoped, you will need to edit the token (or create a new one) whenever you add a new repository to Vigil's tracked list.
