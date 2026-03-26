@@ -19,19 +19,35 @@ const DEFAULTS = {
   pollingInterval: 300000, // 5 minutes
 }
 
+/**
+ * Sorts an array of { owner, repo } objects alphabetically by "owner/repo",
+ * case-insensitive. Returns a new sorted array; does not mutate the input.
+ */
+export function sortRepos(repos) {
+  return [...repos].sort((a, b) => {
+    const keyA = `${a.owner}/${a.repo}`.toLowerCase()
+    const keyB = `${b.owner}/${b.repo}`.toLowerCase()
+    return keyA.localeCompare(keyB)
+  })
+}
+
 export async function loadConfig() {
   const store = await getStore()
   if (!store) {
     // Fallback for browser dev (no Tauri)
     try {
-      return JSON.parse(localStorage.getItem('vigil_config') || '{}')
+      const cfg = JSON.parse(localStorage.getItem('vigil_config') || '{}')
+      return {
+        ...cfg,
+        repos: sortRepos(cfg.repos || []),
+      }
     } catch {
       return { ...DEFAULTS }
     }
   }
   return {
     token:           (await store.get('token'))           ?? DEFAULTS.token,
-    repos:           (await store.get('repos'))           ?? DEFAULTS.repos,
+    repos:           sortRepos((await store.get('repos')) ?? DEFAULTS.repos),
     pollingInterval: (await store.get('pollingInterval')) ?? DEFAULTS.pollingInterval,
   }
 }
