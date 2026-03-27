@@ -1,0 +1,61 @@
+name: Build Mac (Test)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Import signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "" build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
+          rm certificate.p12
+
+      - name: Verify notarization credentials
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool history \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID"
+
+      # - name: Build Tauri app
+      #   uses: tauri-apps/tauri-action@v0
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #     APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      #     APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      #     APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      #     APPLE_ID: ${{ secrets.APPLE_ID }}
+      #     APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      #     APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      #   with:
+      #     args: --target aarch64-apple-darwin --bundles dmg
