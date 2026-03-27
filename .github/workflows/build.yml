@@ -46,6 +46,10 @@ jobs:
           security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
           rm certificate.p12
+          # Install Apple intermediate cert to complete the signing chain
+          curl -s https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o DeveloperIDG2CA.cer
+          security import DeveloperIDG2CA.cer -k build.keychain
+          rm DeveloperIDG2CA.cer
 
       - name: Verify notarization credentials
         env:
