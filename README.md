@@ -41,6 +41,12 @@ npm run tauri dev
 
 This starts Vite in dev mode and launches the Tauri window with hot reload.
 
+### Rebuilding the icon
+
+```bash
+npm run tauri icon icon.png
+```
+
 ## Build
 
 ```bash

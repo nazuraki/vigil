@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "clean": "rm -rf dist src-tauri/target",
+    "clean-tauri": "rm -rf src-tauri/target"
   },
   "dependencies": {
     "@octokit/rest": "^21.0.2",

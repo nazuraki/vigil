@@ -12,16 +12,7 @@ permissions:
 
 jobs:
   build-mac:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: aarch64-apple-darwin
-            runs-on: macos-14
-          - target: x86_64-apple-darwin
-            runs-on: macos-13
-
-    runs-on: ${{ matrix.runs-on }}
+    runs-on: macos-latest
 
     steps:
       - uses: actions/checkout@v6
@@ -57,7 +48,7 @@ jobs:
           releaseName: Vigil ${{ inputs.tag }}
           releaseDraft: false
           prerelease: false
-          args: --target ${{ matrix.target }} --bundles dmg
+          args: --target aarch64-apple-darwin --bundles dmg
 
   build-windows:
     runs-on: windows-latest
