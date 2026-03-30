@@ -1,0 +1,35 @@
+name: Steward
+
+on:
+  schedule:
+    # Run nightly at 2am
+    - cron: "0 2 * * *"
+  workflow_dispatch: # Allow manual triggers from the Actions tab
+
+# Prevent overlapping runs — only one Steward run at a time.
+concurrency:
+  group: steward
+  cancel-in-progress: false
+
+jobs:
+  steward:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # Check out the target repo (the one Steward will work on).
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # full history so Steward can create branches
+
+      - uses: nazuraki/steward@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+          github_app_id: ${{ secrets.STEWARD_APP_ID }}
+          github_app_private_key: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          github_app_installation_id: ${{ secrets.STEWARD_APP_INSTALLATION_ID }}
+
+          bot_username: nazuraki-steward[bot]
+          git_user_name: nazuraki-steward[bot]
+          git_user_email: nazuraki-steward[bot]@users.noreply.github.com

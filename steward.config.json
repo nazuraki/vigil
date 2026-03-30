@@ -1,4 +1,7 @@
 {
   "allowList": ["nazuraki"],
-  requireIssueAllowlist": true
+  "requireIssueAllowlist": true,
+  "models": {
+    "commitTitle": "claude-haiku-4-5-20251001"
+  }
 }
