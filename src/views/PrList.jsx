@@ -122,9 +122,27 @@ export default function PrList() {
           </div>
         )}
 
-        {prs.map(pr => (
-          <PrCard key={`${pr._repoKey}#${pr.number}`} pr={pr} onOpen={openUrl} />
-        ))}
+        {(() => {
+          const ownPrs   = prs.filter(pr => pr._isOwn)
+          const otherPrs = prs.filter(pr => !pr._isOwn)
+          return (
+            <>
+              {ownPrs.map(pr => (
+                <PrCard key={`${pr._repoKey}#${pr.number}`} pr={pr} onOpen={openUrl} />
+              ))}
+              {ownPrs.length > 0 && otherPrs.length > 0 && (
+                <div className="flex items-center gap-2 px-1 py-0.5">
+                  <div className="flex-1 h-px bg-outline-variant/20" />
+                  <span className="text-[0.5rem] font-mono text-on-surface-variant/30 uppercase tracking-widest">others</span>
+                  <div className="flex-1 h-px bg-outline-variant/20" />
+                </div>
+              )}
+              {otherPrs.map(pr => (
+                <PrCard key={`${pr._repoKey}#${pr.number}`} pr={pr} onOpen={openUrl} />
+              ))}
+            </>
+          )
+        })()}
       </main>
 
       {/* Status bar */}

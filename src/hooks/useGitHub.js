@@ -9,6 +9,9 @@ const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 // Keys: "pulls:{owner}/{repo}" and "checks:{owner}/{repo}/{sha}"
 const etagCache = new Map()
 
+// Authenticated user login — cached across polls, cleared on reload (token change).
+let cachedUserLogin = null
+
 
 // ─── hook ────────────────────────────────────────────────────────────────────
 
@@ -49,6 +52,16 @@ export function useGitHub() {
       const allPrs      = []
       let   anySucceeded = false
 
+      // Fetch authenticated user once; cached until reload (config/token change)
+      if (!cachedUserLogin) {
+        try {
+          const { data } = await octokit.users.getAuthenticated()
+          cachedUserLogin = data.login
+        } catch {
+          // Not fatal — own-PR features degrade gracefully
+        }
+      }
+
       for (const { owner, repo } of config.repos) {
         try {
           const pulls = await fetchPulls(octokit, owner, repo)
@@ -73,6 +86,7 @@ export function useGitHub() {
               _ciStatus:           ciStatus,
               _priority:           getPrPriority(pr, reviews),
               _unresolvedComments: unresolvedComments,
+              _isOwn:              cachedUserLogin ? pr.user.login === cachedUserLogin : false,
             })
           }
         } catch (repoErr) {
@@ -140,6 +154,7 @@ export function useGitHub() {
 
   const reload = useCallback(async () => {
     etagCache.clear()
+    cachedUserLogin       = null   // token may have changed
     prevPrsRef.current    = null   // reset so next fetch re-establishes baseline
     lastGoodPrsRef.current = null  // clear preserved list so a fresh one is committed
     await fetchPRs()
@@ -183,6 +198,31 @@ async function diffAndNotify(freshPrs, prevMap) {
         title: `Changes pushed — ${pr._repoKey}`,
         body:  `#${pr.number} · ${pr.title}`,
       })
+    }
+
+    if (pr._isOwn && prev) {
+      // CI status changed
+      if (prev._ciStatus !== pr._ciStatus) {
+        if (pr._ciStatus === 'failing') {
+          toNotify.push({ title: `CI failing — ${pr._repoKey}`, body: `#${pr.number} · ${pr.title}` })
+        } else if (pr._ciStatus === 'passing' && prev._ciStatus !== 'passing') {
+          toNotify.push({ title: `CI passed — ${pr._repoKey}`, body: `#${pr.number} · ${pr.title}` })
+        }
+      }
+
+      // Review state changed
+      if (prev._priority !== pr._priority) {
+        if (pr._priority === 1) {
+          toNotify.push({ title: `Changes requested — ${pr._repoKey}`, body: `#${pr.number} · ${pr.title}` })
+        } else if (pr._priority === 2) {
+          toNotify.push({ title: `Approved — ${pr._repoKey}`, body: `#${pr.number} · ${pr.title}` })
+        }
+      }
+
+      // New unresolved comments added
+      if (pr._unresolvedComments > (prev._unresolvedComments ?? 0)) {
+        toNotify.push({ title: `New comments — ${pr._repoKey}`, body: `#${pr.number} · ${pr.title}` })
+      }
     }
   }
 
@@ -400,6 +440,7 @@ function ciStatusFromRuns(runs) {
 }
 
 function sortPrs(a, b) {
+  if (a._isOwn !== b._isOwn)       return a._isOwn ? -1 : 1
   if (a._priority !== b._priority) return a._priority - b._priority
   if (a._repoKey  !== b._repoKey)  return a._repoKey.localeCompare(b._repoKey)
   return new Date(b.updated_at) - new Date(a.updated_at)
