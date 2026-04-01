@@ -55,15 +55,24 @@ export function useGitHub() {
           anySucceeded = true
           for (const pr of pulls) {
             if (pr.state !== 'open') continue
-            const [ciStatus, reviews] = await Promise.all([
+            const [ciStatus, { data: reviews, fromCache: reviewsCached }] = await Promise.all([
               fetchCiStatus(octokit, owner, repo, pr.head.sha),
               fetchReviews(octokit, owner, repo, pr.number),
             ])
+            const unresolvedKey = `unresolved:${owner}/${repo}/${pr.number}`
+            let unresolvedComments
+            if (reviewsCached && etagCache.has(unresolvedKey)) {
+              unresolvedComments = etagCache.get(unresolvedKey)
+            } else {
+              unresolvedComments = await fetchUnresolvedCommentCount(octokit, owner, repo, pr.number)
+              etagCache.set(unresolvedKey, unresolvedComments)
+            }
             allPrs.push({
               ...pr,
-              _repoKey:  `${owner}/${repo}`,
-              _ciStatus: ciStatus,
-              _priority: getPrPriority(pr, reviews),
+              _repoKey:            `${owner}/${repo}`,
+              _ciStatus:           ciStatus,
+              _priority:           getPrPriority(pr, reviews),
+              _unresolvedComments: unresolvedComments,
             })
           }
         } catch (repoErr) {
@@ -306,16 +315,47 @@ async function fetchReviews(octokit, owner, repo, pullNumber) {
       })
     )
 
-    if (response.status === 304) return cached?.data ?? []
+    if (response.status === 304) return { data: cached?.data ?? [], fromCache: true }
 
     const etag = response.headers?.etag
     const data = response.data
     if (etag) etagCache.set(key, { etag, data })
-    return data
+    return { data, fromCache: false }
   } catch (err) {
-    if (err.status === 304 && cached) return cached.data
+    if (err.status === 304 && cached) return { data: cached.data, fromCache: true }
     console.warn(`Reviews fetch failed for ${owner}/${repo}#${pullNumber}:`, err.message)
-    return []
+    return { data: [], fromCache: false }
+  }
+}
+
+/**
+ * Fetch the count of unresolved review threads for a PR via GraphQL.
+ * The REST API does not expose thread resolution status; GraphQL is required.
+ * Returns 0 on failure so a bad fetch never removes the PR from the list.
+ */
+async function fetchUnresolvedCommentCount(octokit, owner, repo, pullNumber) {
+  try {
+    const response = await withRateLimit(() =>
+      octokit.request('POST /graphql', {
+        query: `
+          query($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              pullRequest(number: $number) {
+                reviewThreads(first: 100) {
+                  nodes { isResolved }
+                }
+              }
+            }
+          }
+        `,
+        variables: { owner, repo, number: pullNumber },
+      })
+    )
+    const threads = response.data?.repository?.pullRequest?.reviewThreads?.nodes ?? []
+    return threads.filter(t => !t.isResolved).length
+  } catch (err) {
+    console.warn(`Unresolved comments fetch failed for ${owner}/${repo}#${pullNumber}:`, err.message)
+    return 0
   }
 }
 

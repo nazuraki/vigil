@@ -21,13 +21,12 @@ const CI_BADGE = {
 }
 
 export default function PrCard({ pr, onOpen }) {
-  const { title, updated_at, draft, comments, review_comments, _repoKey, _ciStatus, _priority } = pr
+  const { title, updated_at, draft, _repoKey, _ciStatus, _priority, _unresolvedComments } = pr
   const [owner, repo] = _repoKey.split('/')
   const isNew = (Date.now() - new Date(updated_at).getTime()) < 10 * 60 * 1000
   const border = BORDER[_ciStatus] ?? BORDER.unknown
   const badge  = CI_BADGE[_ciStatus] ?? CI_BADGE.unknown
-  const totalComments   = (comments || 0) + (review_comments || 0)
-  const priorityBadge   = PRIORITY_BADGE[_priority]
+  const priorityBadge = PRIORITY_BADGE[_priority]
 
   return (
     <div
@@ -71,11 +70,11 @@ export default function PrCard({ pr, onOpen }) {
             </span>
           )}
 
-          {/* Comments */}
-          {totalComments > 0 && (
-            <div className="flex items-center gap-0.5 text-on-surface-variant/70">
+          {/* Unresolved comments */}
+          {_unresolvedComments > 0 && (
+            <div className="flex items-center gap-0.5 text-error/70">
               <span className="material-symbols-outlined !text-[0.75rem]">chat_bubble</span>
-              <span className="text-[0.625rem]">{totalComments}</span>
+              <span className="text-[0.625rem]">{_unresolvedComments}</span>
             </div>
           )}
         </div>
