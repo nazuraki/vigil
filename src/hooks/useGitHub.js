@@ -27,6 +27,7 @@ export function useGitHub() {
   // Last known-good PR list — used to preserve the displayed list when a poll
   // cycle fails entirely (network error, all repos unreachable, etc.) so that
   // PRs never disappear due to transient failures.
+  // Shape: { prs: PR[], timestamp: number } | null
   const lastGoodPrsRef = useRef(null)
 
   const fetchPRs = useCallback(async () => {
@@ -52,6 +53,7 @@ export function useGitHub() {
           const pulls = await fetchPulls(octokit, owner, repo)
           anySucceeded = true
           for (const pr of pulls) {
+            if (pr.state !== 'open') continue
             const ciStatus = await fetchCiStatus(octokit, owner, repo, pr.head.sha)
             allPrs.push({ ...pr, _repoKey: `${owner}/${repo}`, _ciStatus: ciStatus })
           }
@@ -62,12 +64,16 @@ export function useGitHub() {
 
       // If not a single repo call succeeded, treat this cycle as a failure and
       // keep the last known-good list visible rather than showing an empty list.
+      // Stale data is only preserved for up to 2× the polling interval to prevent
+      // closed/merged PRs from persisting indefinitely during repeated failures.
       if (!anySucceeded && config.repos.length > 0) {
         setError('Could not reach GitHub — showing last known data')
         setIsStale(true)
-        // Restore previous good list if we have one
         if (lastGoodPrsRef.current !== null) {
-          setPrs(lastGoodPrsRef.current)
+          const staleTtl = (config.pollingInterval || 300_000) * 2
+          if (Date.now() - lastGoodPrsRef.current.timestamp <= staleTtl) {
+            setPrs(lastGoodPrsRef.current.prs)
+          }
         }
         return
       }
@@ -81,7 +87,7 @@ export function useGitHub() {
       prevPrsRef.current = new Map(allPrs.map(pr => [`${pr._repoKey}#${pr.number}`, pr]))
 
       // Commit the fresh list as the new known-good baseline
-      lastGoodPrsRef.current = allPrs
+      lastGoodPrsRef.current = { prs: allPrs, timestamp: Date.now() }
       setIsStale(false)
       setPrs(allPrs)
       setLastSync(new Date())
@@ -91,7 +97,11 @@ export function useGitHub() {
       setError(fmtError(err))
       setIsStale(true)
       if (lastGoodPrsRef.current !== null) {
-        setPrs(lastGoodPrsRef.current)
+        const cfg = await loadConfig().catch(() => ({}))
+        const staleTtl = (cfg.pollingInterval || 300_000) * 2
+        if (Date.now() - lastGoodPrsRef.current.timestamp <= staleTtl) {
+          setPrs(lastGoodPrsRef.current.prs)
+        }
       }
     } finally {
       setLoading(false)
