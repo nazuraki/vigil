@@ -9,6 +9,7 @@ const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 // Keys: "pulls:{owner}/{repo}" and "checks:{owner}/{repo}/{sha}"
 const etagCache = new Map()
 
+
 // ─── hook ────────────────────────────────────────────────────────────────────
 
 export function useGitHub() {
@@ -44,7 +45,7 @@ export function useGitHub() {
     setError(null)
 
     try {
-      const octokit     = new Octokit({ auth: config.token })
+      const octokit = new Octokit({ auth: config.token })
       const allPrs      = []
       let   anySucceeded = false
 
@@ -54,8 +55,16 @@ export function useGitHub() {
           anySucceeded = true
           for (const pr of pulls) {
             if (pr.state !== 'open') continue
-            const ciStatus = await fetchCiStatus(octokit, owner, repo, pr.head.sha)
-            allPrs.push({ ...pr, _repoKey: `${owner}/${repo}`, _ciStatus: ciStatus })
+            const [ciStatus, reviews] = await Promise.all([
+              fetchCiStatus(octokit, owner, repo, pr.head.sha),
+              fetchReviews(octokit, owner, repo, pr.number),
+            ])
+            allPrs.push({
+              ...pr,
+              _repoKey:  `${owner}/${repo}`,
+              _ciStatus: ciStatus,
+              _priority: getPrPriority(pr, reviews),
+            })
           }
         } catch (repoErr) {
           console.warn(`Failed to fetch ${owner}/${repo}:`, repoErr.message)
@@ -128,7 +137,14 @@ export function useGitHub() {
     await setupPolling()
   }, [fetchPRs, setupPolling])
 
-  return { prs, loading, error, lastSync, hasConfig, isStale, refresh: fetchPRs, reload }
+  // User-initiated refresh: clear ETag cache so every repo gets a forced fresh
+  // fetch from GitHub rather than relying on potentially stale cached data.
+  const refresh = useCallback(async () => {
+    etagCache.clear()
+    await fetchPRs()
+  }, [fetchPRs])
+
+  return { prs, loading, error, lastSync, hasConfig, isStale, refresh, reload }
 }
 
 // ─── notification diff ───────────────────────────────────────────────────────
@@ -193,17 +209,31 @@ async function fetchPulls(octokit, owner, repo) {
   const key    = `pulls:${owner}/${repo}`
   const cached = etagCache.get(key)
 
-  // Fast path: single-page fetch with ETag.  If the response is 304 we know
-  // nothing changed, so return the full cached list without re-paginating.
-  const firstResponse = await withRateLimit(() =>
-    octokit.request('GET /repos/{owner}/{repo}/pulls', {
-      owner, repo,
-      state: 'open', sort: 'updated', per_page: 100,
-      headers: cached?.etag ? { 'if-none-match': cached.etag } : {},
-    })
-  )
-
-  if (firstResponse.status === 304) return cached.data   // nothing changed
+  // WKWebView's disk HTTP cache completely ignores the fetch `cache` option —
+  // the only reliable bypass is a URL it has never seen.  When we have no
+  // cached ETag (first fetch of a session, or after manual refresh clears the
+  // cache) we append a per-call timestamp so the URL is always new.
+  // On subsequent polls we DO have an ETag, so we send If-None-Match ourselves;
+  // Octokit v21 throws RequestError("Not modified", 304) on that response.
+  let firstResponse
+  try {
+    if (cached?.etag) {
+      firstResponse = await withRateLimit(() =>
+        octokit.request('GET /repos/{owner}/{repo}/pulls', {
+          owner, repo,
+          state: 'open', sort: 'updated', per_page: 100,
+          headers: { 'if-none-match': cached.etag },
+        })
+      )
+    } else {
+      firstResponse = await withRateLimit(() =>
+        octokit.request(`GET /repos/${owner}/${repo}/pulls?state=open&sort=updated&per_page=100&_t=${Date.now()}`)
+      )
+    }
+  } catch (err) {
+    if (err.status === 304) return cached?.data ?? []
+    throw err
+  }
 
   let allPulls = [...firstResponse.data]
 
@@ -245,7 +275,7 @@ async function fetchCiStatus(octokit, owner, repo, sha) {
       })
     )
 
-    if (response.status === 304) return cached.data   // CI unchanged
+    if (response.status === 304) return cached?.data ?? 'unknown'   // CI unchanged
 
     const etag = response.headers?.etag
     const status = ciStatusFromRuns(response.data.check_runs)
@@ -257,6 +287,35 @@ async function fetchCiStatus(octokit, owner, repo, sha) {
     // list.  Fall back to 'unknown' so the card is still rendered.
     console.warn(`CI status fetch failed for ${owner}/${repo}@${sha}:`, err.message)
     return 'unknown'
+  }
+}
+
+/**
+ * Fetch the review list for a PR with ETag caching.
+ * Returns [] on failure so a bad fetch never removes the PR from the list.
+ */
+async function fetchReviews(octokit, owner, repo, pullNumber) {
+  const key    = `reviews:${owner}/${repo}/${pullNumber}`
+  const cached = etagCache.get(key)
+
+  try {
+    const response = await withRateLimit(() =>
+      octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews', {
+        owner, repo, pull_number: pullNumber, per_page: 50,
+        headers: cached?.etag ? { 'if-none-match': cached.etag } : {},
+      })
+    )
+
+    if (response.status === 304) return cached?.data ?? []
+
+    const etag = response.headers?.etag
+    const data = response.data
+    if (etag) etagCache.set(key, { etag, data })
+    return data
+  } catch (err) {
+    if (err.status === 304 && cached) return cached.data
+    console.warn(`Reviews fetch failed for ${owner}/${repo}#${pullNumber}:`, err.message)
+    return []
   }
 }
 
@@ -300,12 +359,36 @@ function ciStatusFromRuns(runs) {
   return 'unknown'
 }
 
-const STATUS_ORDER = { failing: 0, pending: 1, passing: 2, unknown: 3 }
-
 function sortPrs(a, b) {
-  const diff = (STATUS_ORDER[a._ciStatus] ?? 3) - (STATUS_ORDER[b._ciStatus] ?? 3)
-  if (diff !== 0) return diff
+  if (a._priority !== b._priority) return a._priority - b._priority
+  if (a._repoKey  !== b._repoKey)  return a._repoKey.localeCompare(b._repoKey)
   return new Date(b.updated_at) - new Date(a.updated_at)
+}
+
+/**
+ * Priority tiers:
+ *   0 — needs review   (no review activity, awaiting first look)
+ *   1 — open comments  (changes requested or reviewer left comments)
+ *   2 — ready          (approved, no outstanding changes requested)
+ *   3 — draft / other
+ */
+function getPrPriority(pr, reviews) {
+  if (pr.draft) return 3
+
+  // Collapse to the latest review state per reviewer, ignoring PENDING/DISMISSED
+  const latestByReviewer = new Map()
+  for (const r of reviews) {
+    if (r.state === 'PENDING' || r.state === 'DISMISSED') continue
+    latestByReviewer.set(r.user.login, r.state)
+  }
+
+  const states = [...latestByReviewer.values()]
+  const hasApproval         = states.some(s => s === 'APPROVED')
+  const hasChangesRequested = states.some(s => s === 'CHANGES_REQUESTED')
+
+  if (hasChangesRequested) return 1
+  if (hasApproval)         return 2
+  return 0  // no reviews yet — needs first look
 }
 
 function fmtError(err) {

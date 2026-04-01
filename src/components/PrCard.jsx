@@ -1,5 +1,11 @@
 import { timeAgo } from '../utils/time'
 
+const PRIORITY_BADGE = {
+  0: { label: 'REVIEW',   cls: 'text-on-surface-variant' },
+  1: { label: 'CHANGES',  cls: 'text-error' },
+  2: { label: 'APPROVED', cls: 'text-primary' },
+}
+
 const BORDER = {
   failing: 'border-error',
   pending: 'border-primary/40',
@@ -15,12 +21,13 @@ const CI_BADGE = {
 }
 
 export default function PrCard({ pr, onOpen }) {
-  const { title, updated_at, draft, comments, review_comments, _repoKey, _ciStatus } = pr
+  const { title, updated_at, draft, comments, review_comments, _repoKey, _ciStatus, _priority } = pr
   const [owner, repo] = _repoKey.split('/')
   const isNew = (Date.now() - new Date(updated_at).getTime()) < 10 * 60 * 1000
   const border = BORDER[_ciStatus] ?? BORDER.unknown
   const badge  = CI_BADGE[_ciStatus] ?? CI_BADGE.unknown
-  const totalComments = (comments || 0) + (review_comments || 0)
+  const totalComments   = (comments || 0) + (review_comments || 0)
+  const priorityBadge   = PRIORITY_BADGE[_priority]
 
   return (
     <div
@@ -56,6 +63,13 @@ export default function PrCard({ pr, onOpen }) {
             </span>
             <span>{badge.label}</span>
           </div>
+
+          {/* Priority */}
+          {priorityBadge && (
+            <span className={`text-[0.625rem] font-mono font-medium ${priorityBadge.cls}`}>
+              {priorityBadge.label}
+            </span>
+          )}
 
           {/* Comments */}
           {totalComments > 0 && (
