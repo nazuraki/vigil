@@ -9,8 +9,9 @@ const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 // Keys: "pulls:{owner}/{repo}" and "checks:{owner}/{repo}/{sha}"
 const etagCache = new Map()
 
-// Authenticated user login — cached across polls, cleared on reload (token change).
-let cachedUserLogin = null
+// Authenticated user login per account — keyed by account ID.
+// Cleared on reload (token/config change).
+const cachedUserLogins = new Map()
 
 
 // ─── hook ────────────────────────────────────────────────────────────────────
@@ -37,7 +38,8 @@ export function useGitHub() {
   const fetchPRs = useCallback(async () => {
     const config = await loadConfig()
 
-    if (!config.token || !config.repos?.length) {
+    const activeAccounts = (config.accounts || []).filter(a => a.token && a.repos?.length)
+    if (!activeAccounts.length) {
       setHasConfig(false)
       setPrs([])
       lastGoodPrsRef.current = null
@@ -48,49 +50,53 @@ export function useGitHub() {
     setError(null)
 
     try {
-      const octokit = new Octokit({ auth: config.token })
       const allPrs      = []
       let   anySucceeded = false
 
-      // Fetch authenticated user once; cached until reload (config/token change)
-      if (!cachedUserLogin) {
-        try {
-          const { data } = await octokit.users.getAuthenticated()
-          cachedUserLogin = data.login
-        } catch {
-          // Not fatal — own-PR features degrade gracefully
-        }
-      }
+      for (const account of activeAccounts) {
+        const octokit = new Octokit({ auth: account.token })
 
-      for (const { owner, repo } of config.repos) {
-        try {
-          const pulls = await fetchPulls(octokit, owner, repo)
-          anySucceeded = true
-          for (const pr of pulls) {
-            if (pr.state !== 'open') continue
-            const [ciStatus, { data: reviews, fromCache: reviewsCached }] = await Promise.all([
-              fetchCiStatus(octokit, owner, repo, pr.head.sha),
-              fetchReviews(octokit, owner, repo, pr.number),
-            ])
-            const unresolvedKey = `unresolved:${owner}/${repo}/${pr.number}`
-            let unresolvedComments
-            if (reviewsCached && etagCache.has(unresolvedKey)) {
-              unresolvedComments = etagCache.get(unresolvedKey)
-            } else {
-              unresolvedComments = await fetchUnresolvedCommentCount(octokit, owner, repo, pr.number)
-              etagCache.set(unresolvedKey, unresolvedComments)
-            }
-            allPrs.push({
-              ...pr,
-              _repoKey:            `${owner}/${repo}`,
-              _ciStatus:           ciStatus,
-              _priority:           getPrPriority(pr, reviews),
-              _unresolvedComments: unresolvedComments,
-              _isOwn:              cachedUserLogin ? pr.user.login === cachedUserLogin : false,
-            })
+        // Fetch authenticated user once per account; cached until reload
+        if (!cachedUserLogins.has(account.id)) {
+          try {
+            const { data } = await octokit.users.getAuthenticated()
+            cachedUserLogins.set(account.id, data.login)
+          } catch {
+            cachedUserLogins.set(account.id, null)
           }
-        } catch (repoErr) {
-          console.warn(`Failed to fetch ${owner}/${repo}:`, repoErr.message)
+        }
+        const userLogin = cachedUserLogins.get(account.id)
+
+        for (const { owner, repo } of account.repos) {
+          try {
+            const pulls = await fetchPulls(octokit, owner, repo)
+            anySucceeded = true
+            for (const pr of pulls) {
+              if (pr.state !== 'open') continue
+              const [ciStatus, { data: reviews, fromCache: reviewsCached }] = await Promise.all([
+                fetchCiStatus(octokit, owner, repo, pr.head.sha),
+                fetchReviews(octokit, owner, repo, pr.number),
+              ])
+              const unresolvedKey = `unresolved:${owner}/${repo}/${pr.number}`
+              let unresolvedComments
+              if (reviewsCached && etagCache.has(unresolvedKey)) {
+                unresolvedComments = etagCache.get(unresolvedKey)
+              } else {
+                unresolvedComments = await fetchUnresolvedCommentCount(octokit, owner, repo, pr.number)
+                etagCache.set(unresolvedKey, unresolvedComments)
+              }
+              allPrs.push({
+                ...pr,
+                _repoKey:            `${owner}/${repo}`,
+                _ciStatus:           ciStatus,
+                _priority:           getPrPriority(pr, reviews),
+                _unresolvedComments: unresolvedComments,
+                _isOwn:              userLogin ? pr.user.login === userLogin : false,
+              })
+            }
+          } catch (repoErr) {
+            console.warn(`Failed to fetch ${owner}/${repo}:`, repoErr.message)
+          }
         }
       }
 
@@ -98,7 +104,7 @@ export function useGitHub() {
       // keep the last known-good list visible rather than showing an empty list.
       // Stale data is only preserved for up to 2× the polling interval to prevent
       // closed/merged PRs from persisting indefinitely during repeated failures.
-      if (!anySucceeded && config.repos.length > 0) {
+      if (!anySucceeded && activeAccounts.length > 0) {
         setError('Could not reach GitHub — showing last known data')
         setIsStale(true)
         if (lastGoodPrsRef.current !== null) {
@@ -154,7 +160,7 @@ export function useGitHub() {
 
   const reload = useCallback(async () => {
     etagCache.clear()
-    cachedUserLogin       = null   // token may have changed
+    cachedUserLogins.clear()   // tokens may have changed
     prevPrsRef.current    = null   // reset so next fetch re-establishes baseline
     lastGoodPrsRef.current = null  // clear preserved list so a fresh one is committed
     await fetchPRs()

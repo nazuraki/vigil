@@ -21,7 +21,7 @@ A native desktop utility (Tauri 2) that polls GitHub for open PRs across multipl
 
 ## Views
 - **PrList** (`src/views/PrList.jsx`) — compact PR list, fixed header + scrollable cards + status footer
-- **Settings** (`src/views/Settings.jsx`) — GitHub token, tracked repos, polling interval
+- **Settings** (`src/views/Settings.jsx`) — GitHub accounts (token + repos per account), polling interval
 
 ## Key files
 ```
@@ -48,6 +48,7 @@ npx tauri icon path/to/icon.png   # generates all required icon sizes
 
 ## Config storage
 Stored in OS app data dir as `config.json`:
-- `token` — GitHub PAT (needs `repo` scope)
-- `repos` — `[{ owner, repo }]`
+- `accounts` — `[{ id, label, token, repos: [{ owner, repo }] }]` — multiple GitHub accounts, each with own PAT and repo list
 - `pollingInterval` — ms (default 300000 = 5 min)
+
+Old single-account format (`token` + `repos` keys) is auto-migrated to `accounts` on first load.

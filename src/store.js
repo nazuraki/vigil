@@ -13,11 +13,7 @@ async function getStore() {
   return _store
 }
 
-const DEFAULTS = {
-  token: '',
-  repos: [],
-  pollingInterval: 300000, // 5 minutes
-}
+const DEFAULT_POLLING_INTERVAL = 300000 // 5 minutes
 
 /**
  * Sorts an array of { owner, repo } objects alphabetically by "owner/repo",
@@ -31,25 +27,60 @@ export function sortRepos(repos) {
   })
 }
 
+export function newAccountId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2)
+}
+
 export async function loadConfig() {
   const store = await getStore()
+
   if (!store) {
     // Fallback for browser dev (no Tauri)
     try {
-      const cfg = JSON.parse(localStorage.getItem('vigil_config') || '{}')
-      return {
-        ...cfg,
-        repos: sortRepos(cfg.repos || []),
-      }
+      const raw = JSON.parse(localStorage.getItem('vigil_config') || '{}')
+      return migrateConfig(raw)
     } catch {
-      return { ...DEFAULTS }
+      return { accounts: [], pollingInterval: DEFAULT_POLLING_INTERVAL }
     }
   }
-  return {
-    token:           (await store.get('token'))           ?? DEFAULTS.token,
-    repos:           sortRepos((await store.get('repos')) ?? DEFAULTS.repos),
-    pollingInterval: (await store.get('pollingInterval')) ?? DEFAULTS.pollingInterval,
+
+  const accountsFromStore = await store.get('accounts')
+
+  if (accountsFromStore !== null && accountsFromStore !== undefined) {
+    // New multi-account format
+    return {
+      accounts: (accountsFromStore || []).map(a => ({
+        ...a,
+        repos: sortRepos(a.repos || []),
+      })),
+      pollingInterval: (await store.get('pollingInterval')) ?? DEFAULT_POLLING_INTERVAL,
+    }
   }
+
+  // Legacy single-token format — migrate transparently
+  const token = await store.get('token')
+  const repos = await store.get('repos')
+  return migrateConfig({
+    token,
+    repos,
+    pollingInterval: await store.get('pollingInterval'),
+  })
+}
+
+function migrateConfig(raw) {
+  const pollingInterval = raw.pollingInterval ?? DEFAULT_POLLING_INTERVAL
+  if (raw.token || raw.repos?.length) {
+    return {
+      accounts: [{
+        id:    newAccountId(),
+        label: '',
+        token: raw.token || '',
+        repos: sortRepos(raw.repos || []),
+      }],
+      pollingInterval,
+    }
+  }
+  return { accounts: raw.accounts || [], pollingInterval }
 }
 
 export async function saveConfig(config) {
@@ -58,7 +89,6 @@ export async function saveConfig(config) {
     localStorage.setItem('vigil_config', JSON.stringify(config))
     return
   }
-  await store.set('token', config.token)
-  await store.set('repos', config.repos)
+  await store.set('accounts', config.accounts)
   await store.set('pollingInterval', config.pollingInterval)
 }
