@@ -9,7 +9,7 @@ async function getStore() {
   if (_store) return _store
   if (!isTauri) return null
   const { load } = await import('@tauri-apps/plugin-store')
-  _store = await load('config.json', { autoSave: true })
+  _store = await load('config.json', { defaults: {}, autoSave: true })
   return _store
 }
 

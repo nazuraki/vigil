@@ -135,7 +135,7 @@ export function useGitHub() {
       setError(fmtError(err))
       setIsStale(true)
       if (lastGoodPrsRef.current !== null) {
-        const cfg = await loadConfig().catch(() => ({}))
+        const cfg = await loadConfig().catch(() => ({ pollingInterval: 300_000 }))
         const staleTtl = (cfg.pollingInterval || 300_000) * 2
         if (Date.now() - lastGoodPrsRef.current.timestamp <= staleTtl) {
           setPrs(lastGoodPrsRef.current.prs)
@@ -449,7 +449,7 @@ function sortPrs(a, b) {
   if (a._isOwn !== b._isOwn)       return a._isOwn ? -1 : 1
   if (a._priority !== b._priority) return a._priority - b._priority
   if (a._repoKey  !== b._repoKey)  return a._repoKey.localeCompare(b._repoKey)
-  return new Date(b.updated_at) - new Date(a.updated_at)
+  return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
 }
 
 /**

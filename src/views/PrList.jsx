@@ -34,7 +34,7 @@ async function openSettings() {
     resizable: false,
     center: true,
     decorations: true,
-    titleBarStyle: 'Overlay',
+    titleBarStyle: 'overlay',
     hiddenTitle: true,
   })
   win.once('tauri://error', e => console.error('[settings window]', e))

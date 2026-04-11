@@ -5,7 +5,7 @@ import Settings from './views/Settings'
 // Outside Tauri (Vite dev in browser), fall back to URL hash: /#settings
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 const windowLabel = isTauri
-  ? (window.__TAURI_INTERNALS__?.metadata?.currentWebview?.label ?? 'main')
+  ? (/** @type {any} */ (window).__TAURI_INTERNALS__?.metadata?.currentWebview?.label ?? 'main')
   : (window.location.hash === '#settings' ? 'settings' : 'main')
 
 export default function App() {
