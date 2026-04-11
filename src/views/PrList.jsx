@@ -1,69 +1,72 @@
-import { useEffect } from 'react'
-import { useGitHub } from '../hooks/useGitHub'
-import PrCard from '../components/PrCard'
+import { useEffect } from "react";
+import PrCard from "../components/PrCard";
+import { useGitHub } from "../hooks/useGitHub";
 
-const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
-const isMac   = isTauri && typeof navigator !== 'undefined' && navigator.platform.startsWith('Mac')
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+const isMac = isTauri && typeof navigator !== "undefined" && navigator.platform.startsWith("Mac");
 
 async function openUrl(url) {
   if (isTauri) {
-    const { openUrl } = await import('@tauri-apps/plugin-opener')
-    await openUrl(url)
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    await openUrl(url);
   } else {
-    window.open(url, '_blank')
+    window.open(url, "_blank");
   }
 }
 
 async function openSettings() {
   if (!isTauri) {
-    window.location.hash = '#settings'
-    window.location.reload()
-    return
+    window.location.hash = "#settings";
+    window.location.reload();
+    return;
   }
-  const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
-  const existing = await WebviewWindow.getByLabel('settings')
+  const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+  const existing = await WebviewWindow.getByLabel("settings");
   if (existing) {
-    await existing.setFocus()
-    return
+    await existing.setFocus();
+    return;
   }
-  const win = new WebviewWindow('settings', {
-    url: '/',
-    title: 'Vigil — Settings',
+  const win = new WebviewWindow("settings", {
+    url: "/",
+    title: "Vigil — Settings",
     width: 460,
     height: 600,
     resizable: false,
     center: true,
     decorations: true,
-    titleBarStyle: 'overlay',
+    titleBarStyle: "overlay",
     hiddenTitle: true,
-  })
-  win.once('tauri://error', e => console.error('[settings window]', e))
+  });
+  win.once("tauri://error", (e) => console.error("[settings window]", e));
 }
 
 export default function PrList() {
-  const { prs, loading, error, lastSync, hasConfig, isStale, refresh, reload } = useGitHub()
+  const { prs, loading, error, lastSync, hasConfig, isStale, refresh, reload } = useGitHub();
 
   // Listen for config changes saved from the settings window
   useEffect(() => {
-    if (!isTauri) return
-    let unlisten
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen('config-updated', reload).then(fn => { unlisten = fn })
-    })
-    return () => { unlisten?.() }
-  }, [reload])
+    if (!isTauri) return;
+    let unlisten;
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      listen("config-updated", reload).then((fn) => {
+        unlisten = fn;
+      });
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, [reload]);
 
-  const active = prs.filter(p => p._ciStatus !== 'failing').length
-  const alerts = prs.filter(p => p._ciStatus === 'failing').length
+  const active = prs.filter((p) => p._ciStatus !== "failing").length;
+  const alerts = prs.filter((p) => p._ciStatus === "failing").length;
 
   return (
     <div className="flex flex-col h-screen bg-background">
-
       {/* Header — data-tauri-drag-region makes it a drag handle for the window.
            On macOS with Overlay titlebar, pt-7 clears the traffic lights. */}
       <header
         data-tauri-drag-region
-        className={`shrink-0 flex justify-between items-center px-4 border-b border-outline-variant/10 bg-background ${isMac ? 'pt-7 pb-2.5' : 'py-2.5'}`}
+        className={`shrink-0 flex justify-between items-center px-4 border-b border-outline-variant/10 bg-background ${isMac ? "pt-7 pb-2.5" : "py-2.5"}`}
       >
         <div className="flex items-center gap-2">
           <span
@@ -78,13 +81,15 @@ export default function PrList() {
         </div>
         <div className="flex items-center gap-0.5">
           <button
-            className={`p-1.5 text-on-surface-variant hover:bg-surface-bright rounded transition-colors ${loading ? 'animate-spin' : ''}`}
+            type="button"
+            className={`p-1.5 text-on-surface-variant hover:bg-surface-bright rounded transition-colors ${loading ? "animate-spin" : ""}`}
             onClick={refresh}
             title="Refresh"
           >
             <span className="material-symbols-outlined">sync</span>
           </button>
           <button
+            type="button"
             className="p-1.5 text-on-surface-variant hover:bg-surface-bright rounded transition-colors"
             onClick={openSettings}
             title="Settings"
@@ -101,6 +106,7 @@ export default function PrList() {
             <span className="material-symbols-outlined text-4xl text-primary/40">terminal</span>
             <p className="text-on-surface-variant text-sm">No repositories configured.</p>
             <button
+              type="button"
               className="text-[0.75rem] text-primary hover:text-on-primary-container transition-colors"
               onClick={openSettings}
             >
@@ -111,7 +117,9 @@ export default function PrList() {
 
         {hasConfig && !loading && prs.length === 0 && !error && !isStale && (
           <div className="flex flex-col items-center justify-center h-full gap-2 text-center">
-            <span className="material-symbols-outlined text-3xl text-on-surface-variant/30">check_circle</span>
+            <span className="material-symbols-outlined text-3xl text-on-surface-variant/30">
+              check_circle
+            </span>
             <p className="text-on-surface-variant/60 text-xs">No open pull requests</p>
           </div>
         )}
@@ -123,25 +131,27 @@ export default function PrList() {
         )}
 
         {(() => {
-          const ownPrs   = prs.filter(pr => pr._isOwn)
-          const otherPrs = prs.filter(pr => !pr._isOwn)
+          const ownPrs = prs.filter((pr) => pr._isOwn);
+          const otherPrs = prs.filter((pr) => !pr._isOwn);
           return (
             <>
-              {ownPrs.map(pr => (
+              {ownPrs.map((pr) => (
                 <PrCard key={`${pr._repoKey}#${pr.number}`} pr={pr} onOpen={openUrl} />
               ))}
               {ownPrs.length > 0 && otherPrs.length > 0 && (
                 <div className="flex items-center gap-2 px-1 py-0.5">
                   <div className="flex-1 h-px bg-outline-variant/20" />
-                  <span className="text-[0.5rem] font-mono text-on-surface-variant/30 uppercase tracking-widest">others</span>
+                  <span className="text-[0.5rem] font-mono text-on-surface-variant/30 uppercase tracking-widest">
+                    others
+                  </span>
                   <div className="flex-1 h-px bg-outline-variant/20" />
                 </div>
               )}
-              {otherPrs.map(pr => (
+              {otherPrs.map((pr) => (
                 <PrCard key={`${pr._repoKey}#${pr.number}`} pr={pr} onOpen={openUrl} />
               ))}
             </>
-          )
+          );
         })()}
       </main>
 
@@ -161,15 +171,16 @@ export default function PrList() {
         </div>
         <span>
           {isStale && lastSync
-            ? `stale · last synced ${lastSync.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+            ? `stale · last synced ${lastSync.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
             : isStale
-            ? 'refresh failed'
-            : lastSync
-            ? `synced ${lastSync.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-            : loading ? 'syncing…' : '—'}
+              ? "refresh failed"
+              : lastSync
+                ? `synced ${lastSync.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                : loading
+                  ? "syncing…"
+                  : "—"}
         </span>
       </footer>
-
     </div>
-  )
+  );
 }

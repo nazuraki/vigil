@@ -1,101 +1,105 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { Octokit } from '@octokit/rest'
-import { loadConfig } from '../store'
+import { Octokit } from "@octokit/rest";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { loadConfig } from "../store";
 
-const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 // ─── ETag cache ──────────────────────────────────────────────────────────────
 // Module-level: survives re-renders, cleared on full reload/reload().
 // Keys: "pulls:{owner}/{repo}" and "checks:{owner}/{repo}/{sha}"
-const etagCache = new Map()
+const etagCache = new Map();
 
 // Authenticated user login per account — keyed by account ID.
 // Cleared on reload (token/config change).
-const cachedUserLogins = new Map()
-
+const cachedUserLogins = new Map();
 
 // ─── hook ────────────────────────────────────────────────────────────────────
 
 export function useGitHub() {
-  const [prs, setPrs]             = useState([])
-  const [loading, setLoading]     = useState(false)
-  const [error, setError]         = useState(null)
-  const [lastSync, setLastSync]   = useState(null)
-  const [hasConfig, setHasConfig] = useState(true)
-  const [isStale, setIsStale]     = useState(false)
-  const intervalRef               = useRef(null)
+  const [prs, setPrs] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [lastSync, setLastSync] = useState(null);
+  const [hasConfig, setHasConfig] = useState(true);
+  const [isStale, setIsStale] = useState(false);
+  const intervalRef = useRef(null);
 
   // Keyed by `${repoKey}#${number}` → { sha }
   // Null until the first successful fetch — prevents notifying on initial load.
-  const prevPrsRef = useRef(null)
+  const prevPrsRef = useRef(null);
 
   // Last known-good PR list — used to preserve the displayed list when a poll
   // cycle fails entirely (network error, all repos unreachable, etc.) so that
   // PRs never disappear due to transient failures.
   // Shape: { prs: PR[], timestamp: number } | null
-  const lastGoodPrsRef = useRef(null)
+  const lastGoodPrsRef = useRef(null);
 
   const fetchPRs = useCallback(async () => {
-    const config = await loadConfig()
+    const config = await loadConfig();
 
-    const activeAccounts = (config.accounts || []).filter(a => a.token && a.repos?.length)
+    const activeAccounts = (config.accounts || []).filter((a) => a.token && a.repos?.length);
     if (!activeAccounts.length) {
-      setHasConfig(false)
-      setPrs([])
-      lastGoodPrsRef.current = null
-      return
+      setHasConfig(false);
+      setPrs([]);
+      lastGoodPrsRef.current = null;
+      return;
     }
-    setHasConfig(true)
-    setLoading(true)
-    setError(null)
+    setHasConfig(true);
+    setLoading(true);
+    setError(null);
 
     try {
-      const allPrs      = []
-      let   anySucceeded = false
+      const allPrs = [];
+      let anySucceeded = false;
 
       for (const account of activeAccounts) {
-        const octokit = new Octokit({ auth: account.token })
+        const octokit = new Octokit({ auth: account.token });
 
         // Fetch authenticated user once per account; cached until reload
         if (!cachedUserLogins.has(account.id)) {
           try {
-            const { data } = await octokit.users.getAuthenticated()
-            cachedUserLogins.set(account.id, data.login)
+            const { data } = await octokit.users.getAuthenticated();
+            cachedUserLogins.set(account.id, data.login);
           } catch {
-            cachedUserLogins.set(account.id, null)
+            cachedUserLogins.set(account.id, null);
           }
         }
-        const userLogin = cachedUserLogins.get(account.id)
+        const userLogin = cachedUserLogins.get(account.id);
 
         for (const { owner, repo } of account.repos) {
           try {
-            const pulls = await fetchPulls(octokit, owner, repo)
-            anySucceeded = true
+            const pulls = await fetchPulls(octokit, owner, repo);
+            anySucceeded = true;
             for (const pr of pulls) {
-              if (pr.state !== 'open') continue
+              if (pr.state !== "open") continue;
               const [ciStatus, { data: reviews, fromCache: reviewsCached }] = await Promise.all([
                 fetchCiStatus(octokit, owner, repo, pr.head.sha),
                 fetchReviews(octokit, owner, repo, pr.number),
-              ])
-              const unresolvedKey = `unresolved:${owner}/${repo}/${pr.number}`
-              let unresolvedComments
+              ]);
+              const unresolvedKey = `unresolved:${owner}/${repo}/${pr.number}`;
+              let unresolvedComments;
               if (reviewsCached && etagCache.has(unresolvedKey)) {
-                unresolvedComments = etagCache.get(unresolvedKey)
+                unresolvedComments = etagCache.get(unresolvedKey);
               } else {
-                unresolvedComments = await fetchUnresolvedCommentCount(octokit, owner, repo, pr.number)
-                etagCache.set(unresolvedKey, unresolvedComments)
+                unresolvedComments = await fetchUnresolvedCommentCount(
+                  octokit,
+                  owner,
+                  repo,
+                  pr.number,
+                );
+                etagCache.set(unresolvedKey, unresolvedComments);
               }
               allPrs.push({
                 ...pr,
-                _repoKey:            `${owner}/${repo}`,
-                _ciStatus:           ciStatus,
-                _priority:           getPrPriority(pr, reviews),
+                _repoKey: `${owner}/${repo}`,
+                _ciStatus: ciStatus,
+                _priority: getPrPriority(pr, reviews),
                 _unresolvedComments: unresolvedComments,
-                _isOwn:              userLogin ? pr.user.login === userLogin : false,
-              })
+                _isOwn: userLogin ? pr.user.login === userLogin : false,
+              });
             }
           } catch (repoErr) {
-            console.warn(`Failed to fetch ${owner}/${repo}:`, repoErr.message)
+            console.warn(`Failed to fetch ${owner}/${repo}:`, repoErr.message);
           }
         }
       }
@@ -105,76 +109,78 @@ export function useGitHub() {
       // Stale data is only preserved for up to 2× the polling interval to prevent
       // closed/merged PRs from persisting indefinitely during repeated failures.
       if (!anySucceeded && activeAccounts.length > 0) {
-        setError('Could not reach GitHub — showing last known data')
-        setIsStale(true)
+        setError("Could not reach GitHub — showing last known data");
+        setIsStale(true);
         if (lastGoodPrsRef.current !== null) {
-          const staleTtl = (config.pollingInterval || 300_000) * 2
+          const staleTtl = (config.pollingInterval || 300_000) * 2;
           if (Date.now() - lastGoodPrsRef.current.timestamp <= staleTtl) {
-            setPrs(lastGoodPrsRef.current.prs)
+            setPrs(lastGoodPrsRef.current.prs);
           }
         }
-        return
+        return;
       }
 
-      allPrs.sort(sortPrs)
+      allPrs.sort(sortPrs);
 
       // Diff against previous state and fire notifications (skip on first load)
       if (prevPrsRef.current !== null) {
-        await diffAndNotify(allPrs, prevPrsRef.current)
+        await diffAndNotify(allPrs, prevPrsRef.current);
       }
-      prevPrsRef.current = new Map(allPrs.map(pr => [`${pr._repoKey}#${pr.number}`, pr]))
+      prevPrsRef.current = new Map(allPrs.map((pr) => [`${pr._repoKey}#${pr.number}`, pr]));
 
       // Commit the fresh list as the new known-good baseline
-      lastGoodPrsRef.current = { prs: allPrs, timestamp: Date.now() }
-      setIsStale(false)
-      setPrs(allPrs)
-      setLastSync(new Date())
+      lastGoodPrsRef.current = { prs: allPrs, timestamp: Date.now() };
+      setIsStale(false);
+      setPrs(allPrs);
+      setLastSync(new Date());
     } catch (err) {
       // Outer catch: something unexpected went wrong (auth failure, etc.)
       // Surface the error but preserve whatever was previously displayed.
-      setError(fmtError(err))
-      setIsStale(true)
+      setError(fmtError(err));
+      setIsStale(true);
       if (lastGoodPrsRef.current !== null) {
-        const cfg = await loadConfig().catch(() => ({ pollingInterval: 300_000 }))
-        const staleTtl = (cfg.pollingInterval || 300_000) * 2
+        const cfg = await loadConfig().catch(() => ({ pollingInterval: 300_000 }));
+        const staleTtl = (cfg.pollingInterval || 300_000) * 2;
         if (Date.now() - lastGoodPrsRef.current.timestamp <= staleTtl) {
-          setPrs(lastGoodPrsRef.current.prs)
+          setPrs(lastGoodPrsRef.current.prs);
         }
       }
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }, [])
+  }, []);
 
   const setupPolling = useCallback(async () => {
-    const config   = await loadConfig()
-    const interval = config.pollingInterval || 300_000
-    if (intervalRef.current) clearInterval(intervalRef.current)
-    intervalRef.current = setInterval(fetchPRs, interval)
-  }, [fetchPRs])
+    const config = await loadConfig();
+    const interval = config.pollingInterval || 300_000;
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    intervalRef.current = setInterval(fetchPRs, interval);
+  }, [fetchPRs]);
 
   useEffect(() => {
-    fetchPRs().then(() => setupPolling())
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
-  }, [fetchPRs, setupPolling])
+    fetchPRs().then(() => setupPolling());
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [fetchPRs, setupPolling]);
 
   const reload = useCallback(async () => {
-    etagCache.clear()
-    cachedUserLogins.clear()   // tokens may have changed
-    prevPrsRef.current    = null   // reset so next fetch re-establishes baseline
-    lastGoodPrsRef.current = null  // clear preserved list so a fresh one is committed
-    await fetchPRs()
-    await setupPolling()
-  }, [fetchPRs, setupPolling])
+    etagCache.clear();
+    cachedUserLogins.clear(); // tokens may have changed
+    prevPrsRef.current = null; // reset so next fetch re-establishes baseline
+    lastGoodPrsRef.current = null; // clear preserved list so a fresh one is committed
+    await fetchPRs();
+    await setupPolling();
+  }, [fetchPRs, setupPolling]);
 
   // User-initiated refresh: clear ETag cache so every repo gets a forced fresh
   // fetch from GitHub rather than relying on potentially stale cached data.
   const refresh = useCallback(async () => {
-    etagCache.clear()
-    await fetchPRs()
-  }, [fetchPRs])
+    etagCache.clear();
+    await fetchPRs();
+  }, [fetchPRs]);
 
-  return { prs, loading, error, lastSync, hasConfig, isStale, refresh, reload }
+  return { prs, loading, error, lastSync, hasConfig, isStale, refresh, reload };
 }
 
 // ─── notification diff ───────────────────────────────────────────────────────
@@ -186,69 +192,85 @@ export function useGitHub() {
  *   - Commits pushed to an existing PR (head SHA changed = re-review needed)
  */
 async function diffAndNotify(freshPrs, prevMap) {
-  const toNotify = []
+  const toNotify = [];
 
   for (const pr of freshPrs) {
-    const key  = `${pr._repoKey}#${pr.number}`
-    const prev = prevMap.get(key)
+    const key = `${pr._repoKey}#${pr.number}`;
+    const prev = prevMap.get(key);
 
     if (!prev) {
       // Brand-new PR
       toNotify.push({
         title: `New PR — ${pr._repoKey}`,
-        body:  `#${pr.number} · ${pr.title}`,
-      })
+        body: `#${pr.number} · ${pr.title}`,
+      });
     } else if (prev.head.sha !== pr.head.sha) {
       // Commits pushed since last poll — existing review is stale
       toNotify.push({
         title: `Changes pushed — ${pr._repoKey}`,
-        body:  `#${pr.number} · ${pr.title}`,
-      })
+        body: `#${pr.number} · ${pr.title}`,
+      });
     }
 
     if (pr._isOwn && prev) {
       // CI status changed
       if (prev._ciStatus !== pr._ciStatus) {
-        if (pr._ciStatus === 'failing') {
-          toNotify.push({ title: `CI failing — ${pr._repoKey}`, body: `#${pr.number} · ${pr.title}` })
-        } else if (pr._ciStatus === 'passing' && prev._ciStatus !== 'passing') {
-          toNotify.push({ title: `CI passed — ${pr._repoKey}`, body: `#${pr.number} · ${pr.title}` })
+        if (pr._ciStatus === "failing") {
+          toNotify.push({
+            title: `CI failing — ${pr._repoKey}`,
+            body: `#${pr.number} · ${pr.title}`,
+          });
+        } else if (pr._ciStatus === "passing" && prev._ciStatus !== "passing") {
+          toNotify.push({
+            title: `CI passed — ${pr._repoKey}`,
+            body: `#${pr.number} · ${pr.title}`,
+          });
         }
       }
 
       // Review state changed
       if (prev._priority !== pr._priority) {
         if (pr._priority === 1) {
-          toNotify.push({ title: `Changes requested — ${pr._repoKey}`, body: `#${pr.number} · ${pr.title}` })
+          toNotify.push({
+            title: `Changes requested — ${pr._repoKey}`,
+            body: `#${pr.number} · ${pr.title}`,
+          });
         } else if (pr._priority === 2) {
-          toNotify.push({ title: `Approved — ${pr._repoKey}`, body: `#${pr.number} · ${pr.title}` })
+          toNotify.push({
+            title: `Approved — ${pr._repoKey}`,
+            body: `#${pr.number} · ${pr.title}`,
+          });
         }
       }
 
       // New unresolved comments added
       if (pr._unresolvedComments > (prev._unresolvedComments ?? 0)) {
-        toNotify.push({ title: `New comments — ${pr._repoKey}`, body: `#${pr.number} · ${pr.title}` })
+        toNotify.push({
+          title: `New comments — ${pr._repoKey}`,
+          body: `#${pr.number} · ${pr.title}`,
+        });
       }
     }
   }
 
-  if (!toNotify.length || !isTauri) return
+  if (!toNotify.length || !isTauri) return;
 
   try {
-    const { isPermissionGranted, requestPermission, sendNotification } =
-      await import('@tauri-apps/plugin-notification')
+    const { isPermissionGranted, requestPermission, sendNotification } = await import(
+      "@tauri-apps/plugin-notification"
+    );
 
-    let granted = await isPermissionGranted()
+    let granted = await isPermissionGranted();
     if (!granted) {
-      granted = (await requestPermission()) === 'granted'
+      granted = (await requestPermission()) === "granted";
     }
-    if (!granted) return
+    if (!granted) return;
 
     for (const n of toNotify) {
-      sendNotification(n)
+      sendNotification(n);
     }
   } catch (err) {
-    console.warn('Notification error:', err)
+    console.warn("Notification error:", err);
   }
 }
 
@@ -261,8 +283,8 @@ async function diffAndNotify(freshPrs, prevMap) {
  * Returns cached data unchanged on 304.
  */
 async function fetchPulls(octokit, owner, repo) {
-  const key    = `pulls:${owner}/${repo}`
-  const cached = etagCache.get(key)
+  const key = `pulls:${owner}/${repo}`;
+  const cached = etagCache.get(key);
 
   // WKWebView's disk HTTP cache completely ignores the fetch `cache` option —
   // the only reliable bypass is a URL it has never seen.  When we have no
@@ -270,46 +292,49 @@ async function fetchPulls(octokit, owner, repo) {
   // cache) we append a per-call timestamp so the URL is always new.
   // On subsequent polls we DO have an ETag, so we send If-None-Match ourselves;
   // Octokit v21 throws RequestError("Not modified", 304) on that response.
-  let firstResponse
+  let firstResponse;
   try {
     if (cached?.etag) {
       firstResponse = await withRateLimit(() =>
-        octokit.request('GET /repos/{owner}/{repo}/pulls', {
-          owner, repo,
-          state: 'open', sort: 'updated', per_page: 100,
-          headers: { 'if-none-match': cached.etag },
-        })
-      )
+        octokit.request("GET /repos/{owner}/{repo}/pulls", {
+          owner,
+          repo,
+          state: "open",
+          sort: "updated",
+          per_page: 100,
+          headers: { "if-none-match": cached.etag },
+        }),
+      );
     } else {
       firstResponse = await withRateLimit(() =>
-        octokit.request(`GET /repos/${owner}/${repo}/pulls?state=open&sort=updated&per_page=100&_t=${Date.now()}`)
-      )
+        octokit.request(
+          `GET /repos/${owner}/${repo}/pulls?state=open&sort=updated&per_page=100&_t=${Date.now()}`,
+        ),
+      );
     }
   } catch (err) {
-    if (err.status === 304) return cached?.data ?? []
-    throw err
+    if (err.status === 304) return cached?.data ?? [];
+    throw err;
   }
 
-  let allPulls = [...firstResponse.data]
+  let allPulls = [...firstResponse.data];
 
   // Follow subsequent pages when there are more than 100 open PRs.
   // The Link header's `rel="next"` url is parsed by Octokit automatically via
   // the paginate helper, but since we need ETag support on the first page we
   // drive pagination manually here.
-  const linkHeader = firstResponse.headers?.link ?? ''
-  let nextUrl = parseLinkNext(linkHeader)
+  const linkHeader = firstResponse.headers?.link ?? "";
+  let nextUrl = parseLinkNext(linkHeader);
 
   while (nextUrl) {
-    const pageResp = await withRateLimit(() =>
-      octokit.request(`GET ${nextUrl}`)
-    )
-    allPulls = allPulls.concat(pageResp.data)
-    nextUrl  = parseLinkNext(pageResp.headers?.link ?? '')
+    const pageResp = await withRateLimit(() => octokit.request(`GET ${nextUrl}`));
+    allPulls = allPulls.concat(pageResp.data);
+    nextUrl = parseLinkNext(pageResp.headers?.link ?? "");
   }
 
-  const etag = firstResponse.headers?.etag
-  if (etag) etagCache.set(key, { etag, data: allPulls })
-  return allPulls
+  const etag = firstResponse.headers?.etag;
+  if (etag) etagCache.set(key, { etag, data: allPulls });
+  return allPulls;
 }
 
 /**
@@ -319,29 +344,32 @@ async function fetchPulls(octokit, owner, repo) {
  * with an 'unknown' CI status rather than dropping the PR entirely.
  */
 async function fetchCiStatus(octokit, owner, repo, sha) {
-  const key    = `checks:${owner}/${repo}/${sha}`
-  const cached = etagCache.get(key)
+  const key = `checks:${owner}/${repo}/${sha}`;
+  const cached = etagCache.get(key);
 
   try {
     const response = await withRateLimit(() =>
-      octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
-        owner, repo, ref: sha, per_page: 50,
-        headers: cached?.etag ? { 'if-none-match': cached.etag } : {},
-      })
-    )
+      octokit.request("GET /repos/{owner}/{repo}/commits/{ref}/check-runs", {
+        owner,
+        repo,
+        ref: sha,
+        per_page: 50,
+        headers: cached?.etag ? { "if-none-match": cached.etag } : {},
+      }),
+    );
 
-    if (response.status === 304) return cached?.data ?? 'unknown'   // CI unchanged
+    if (response.status === 304) return cached?.data ?? "unknown"; // CI unchanged
 
-    const etag = response.headers?.etag
-    const status = ciStatusFromRuns(response.data.check_runs)
-    if (etag) etagCache.set(key, { etag, data: status })
-    return status
+    const etag = response.headers?.etag;
+    const status = ciStatusFromRuns(response.data.check_runs);
+    if (etag) etagCache.set(key, { etag, data: status });
+    return status;
   } catch (err) {
-    if (err.status === 304 && cached) return cached.data
+    if (err.status === 304 && cached) return cached.data;
     // Do NOT re-throw — a failed CI fetch must never remove the PR from the
     // list.  Fall back to 'unknown' so the card is still rendered.
-    console.warn(`CI status fetch failed for ${owner}/${repo}@${sha}:`, err.message)
-    return 'unknown'
+    console.warn(`CI status fetch failed for ${owner}/${repo}@${sha}:`, err.message);
+    return "unknown";
   }
 }
 
@@ -350,27 +378,30 @@ async function fetchCiStatus(octokit, owner, repo, sha) {
  * Returns [] on failure so a bad fetch never removes the PR from the list.
  */
 async function fetchReviews(octokit, owner, repo, pullNumber) {
-  const key    = `reviews:${owner}/${repo}/${pullNumber}`
-  const cached = etagCache.get(key)
+  const key = `reviews:${owner}/${repo}/${pullNumber}`;
+  const cached = etagCache.get(key);
 
   try {
     const response = await withRateLimit(() =>
-      octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews', {
-        owner, repo, pull_number: pullNumber, per_page: 50,
-        headers: cached?.etag ? { 'if-none-match': cached.etag } : {},
-      })
-    )
+      octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
+        owner,
+        repo,
+        pull_number: pullNumber,
+        per_page: 50,
+        headers: cached?.etag ? { "if-none-match": cached.etag } : {},
+      }),
+    );
 
-    if (response.status === 304) return { data: cached?.data ?? [], fromCache: true }
+    if (response.status === 304) return { data: cached?.data ?? [], fromCache: true };
 
-    const etag = response.headers?.etag
-    const data = response.data
-    if (etag) etagCache.set(key, { etag, data })
-    return { data, fromCache: false }
+    const etag = response.headers?.etag;
+    const data = response.data;
+    if (etag) etagCache.set(key, { etag, data });
+    return { data, fromCache: false };
   } catch (err) {
-    if (err.status === 304 && cached) return { data: cached.data, fromCache: true }
-    console.warn(`Reviews fetch failed for ${owner}/${repo}#${pullNumber}:`, err.message)
-    return { data: [], fromCache: false }
+    if (err.status === 304 && cached) return { data: cached.data, fromCache: true };
+    console.warn(`Reviews fetch failed for ${owner}/${repo}#${pullNumber}:`, err.message);
+    return { data: [], fromCache: false };
   }
 }
 
@@ -382,7 +413,7 @@ async function fetchReviews(octokit, owner, repo, pullNumber) {
 async function fetchUnresolvedCommentCount(octokit, owner, repo, pullNumber) {
   try {
     const response = await withRateLimit(() =>
-      octokit.request('POST /graphql', {
+      octokit.request("POST /graphql", {
         query: `
           query($owner: String!, $repo: String!, $number: Int!) {
             repository(owner: $owner, name: $repo) {
@@ -395,13 +426,16 @@ async function fetchUnresolvedCommentCount(octokit, owner, repo, pullNumber) {
           }
         `,
         variables: { owner, repo, number: pullNumber },
-      })
-    )
-    const threads = response.data?.repository?.pullRequest?.reviewThreads?.nodes ?? []
-    return threads.filter(t => !t.isResolved).length
+      }),
+    );
+    const threads = response.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
+    return threads.filter((t) => !t.isResolved).length;
   } catch (err) {
-    console.warn(`Unresolved comments fetch failed for ${owner}/${repo}#${pullNumber}:`, err.message)
-    return 0
+    console.warn(
+      `Unresolved comments fetch failed for ${owner}/${repo}#${pullNumber}:`,
+      err.message,
+    );
+    return 0;
   }
 }
 
@@ -411,45 +445,50 @@ async function fetchUnresolvedCommentCount(octokit, owner, repo, pullNumber) {
  */
 async function withRateLimit(fn) {
   try {
-    return await fn()
+    return await fn();
   } catch (err) {
-    const remaining = err.response?.headers?.['x-ratelimit-remaining']
-    const reset     = err.response?.headers?.['x-ratelimit-reset']
-    const isRateLimit = (err.status === 429) ||
-      (err.status === 403 && remaining === '0')
+    const remaining = err.response?.headers?.["x-ratelimit-remaining"];
+    const reset = err.response?.headers?.["x-ratelimit-reset"];
+    const isRateLimit = err.status === 429 || (err.status === 403 && remaining === "0");
 
     if (isRateLimit && reset) {
-      const waitMs = Math.max(parseInt(reset) * 1000 - Date.now() + 2000, 2000)
+      const waitMs = Math.max(parseInt(reset, 10) * 1000 - Date.now() + 2000, 2000);
       if (waitMs <= 70_000) {
-        await sleep(waitMs)
-        return await fn()
+        await sleep(waitMs);
+        return await fn();
       }
     }
 
-    if (err.status === 403 && err.message?.toLowerCase().includes('secondary')) {
-      await sleep(60_000)
-      return await fn()
+    if (err.status === 403 && err.message?.toLowerCase().includes("secondary")) {
+      await sleep(60_000);
+      return await fn();
     }
 
-    throw err
+    throw err;
   }
 }
 
 // ─── pure helpers ────────────────────────────────────────────────────────────
 
 function ciStatusFromRuns(runs) {
-  if (!runs?.length) return 'unknown'
-  if (runs.some(r => ['failure', 'timed_out', 'cancelled', 'action_required'].includes(r.conclusion))) return 'failing'
-  if (runs.some(r => ['in_progress', 'queued', 'waiting', 'requested'].includes(r.status))) return 'pending'
-  if (runs.every(r => ['success', 'skipped', 'neutral'].includes(r.conclusion))) return 'passing'
-  return 'unknown'
+  if (!runs?.length) return "unknown";
+  if (
+    runs.some((r) =>
+      ["failure", "timed_out", "cancelled", "action_required"].includes(r.conclusion),
+    )
+  )
+    return "failing";
+  if (runs.some((r) => ["in_progress", "queued", "waiting", "requested"].includes(r.status)))
+    return "pending";
+  if (runs.every((r) => ["success", "skipped", "neutral"].includes(r.conclusion))) return "passing";
+  return "unknown";
 }
 
 function sortPrs(a, b) {
-  if (a._isOwn !== b._isOwn)       return a._isOwn ? -1 : 1
-  if (a._priority !== b._priority) return a._priority - b._priority
-  if (a._repoKey  !== b._repoKey)  return a._repoKey.localeCompare(b._repoKey)
-  return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+  if (a._isOwn !== b._isOwn) return a._isOwn ? -1 : 1;
+  if (a._priority !== b._priority) return a._priority - b._priority;
+  if (a._repoKey !== b._repoKey) return a._repoKey.localeCompare(b._repoKey);
+  return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
 }
 
 /**
@@ -460,36 +499,36 @@ function sortPrs(a, b) {
  *   3 — draft / other
  */
 function getPrPriority(pr, reviews) {
-  if (pr.draft) return 3
+  if (pr.draft) return 3;
 
   // Collapse to the latest review state per reviewer, ignoring PENDING/DISMISSED
-  const latestByReviewer = new Map()
+  const latestByReviewer = new Map();
   for (const r of reviews) {
-    if (r.state === 'PENDING' || r.state === 'DISMISSED') continue
-    latestByReviewer.set(r.user.login, r.state)
+    if (r.state === "PENDING" || r.state === "DISMISSED") continue;
+    latestByReviewer.set(r.user.login, r.state);
   }
 
-  const states = [...latestByReviewer.values()]
-  const hasApproval         = states.some(s => s === 'APPROVED')
-  const hasChangesRequested = states.some(s => s === 'CHANGES_REQUESTED')
+  const states = [...latestByReviewer.values()];
+  const hasApproval = states.some((s) => s === "APPROVED");
+  const hasChangesRequested = states.some((s) => s === "CHANGES_REQUESTED");
 
-  if (hasChangesRequested) return 1
-  if (hasApproval)         return 2
-  return 0  // no reviews yet — needs first look
+  if (hasChangesRequested) return 1;
+  if (hasApproval) return 2;
+  return 0; // no reviews yet — needs first look
 }
 
 function fmtError(err) {
-  if (err.status === 401) return 'GitHub token invalid or expired'
+  if (err.status === 401) return "GitHub token invalid or expired";
   if (err.status === 403) {
-    const reset = err.response?.headers?.['x-ratelimit-reset']
+    const reset = err.response?.headers?.["x-ratelimit-reset"];
     if (reset) {
-      const mins = Math.ceil((parseInt(reset) * 1000 - Date.now()) / 60_000)
-      return `Rate limit exceeded — resets in ${mins}m`
+      const mins = Math.ceil((parseInt(reset, 10) * 1000 - Date.now()) / 60_000);
+      return `Rate limit exceeded — resets in ${mins}m`;
     }
-    return 'GitHub access forbidden (check token scopes)'
+    return "GitHub access forbidden (check token scopes)";
   }
-  if (err.status === 404) return 'Repository not found (check name or token scope)'
-  return err.message
+  if (err.status === 404) return "Repository not found (check name or token scope)";
+  return err.message;
 }
 
 /**
@@ -497,12 +536,12 @@ function fmtError(err) {
  * Returns null when there is no next page.
  */
 function parseLinkNext(linkHeader) {
-  if (!linkHeader) return null
+  if (!linkHeader) return null;
   // Link header format: <url>; rel="next", <url>; rel="last"
-  const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/)
-  return match ? match[1] : null
+  const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+  return match ? match[1] : null;
 }
 
 function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms))
+  return new Promise((r) => setTimeout(r, ms));
 }
