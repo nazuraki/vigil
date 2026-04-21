@@ -470,7 +470,7 @@ async function withRateLimit(fn) {
 
 // ─── pure helpers ────────────────────────────────────────────────────────────
 
-function ciStatusFromRuns(runs) {
+export function ciStatusFromRuns(runs) {
   if (!runs?.length) return "unknown";
   if (
     runs.some((r) =>
@@ -484,7 +484,7 @@ function ciStatusFromRuns(runs) {
   return "unknown";
 }
 
-function sortPrs(a, b) {
+export function sortPrs(a, b) {
   if (a._isOwn !== b._isOwn) return a._isOwn ? -1 : 1;
   if (a._priority !== b._priority) return a._priority - b._priority;
   if (a._repoKey !== b._repoKey) return a._repoKey.localeCompare(b._repoKey);
@@ -498,7 +498,7 @@ function sortPrs(a, b) {
  *   2 — ready          (approved, no outstanding changes requested)
  *   3 — draft / other
  */
-function getPrPriority(pr, reviews) {
+export function getPrPriority(pr, reviews) {
   if (pr.draft) return 3;
 
   // Collapse to the latest review state per reviewer, ignoring PENDING/DISMISSED
@@ -517,7 +517,7 @@ function getPrPriority(pr, reviews) {
   return 0; // no reviews yet — needs first look
 }
 
-function fmtError(err) {
+export function fmtError(err) {
   if (err.status === 401) return "GitHub token invalid or expired";
   if (err.status === 403) {
     const reset = err.response?.headers?.["x-ratelimit-reset"];
@@ -535,7 +535,7 @@ function fmtError(err) {
  * Parse the `rel="next"` URL out of a GitHub Link header.
  * Returns null when there is no next page.
  */
-function parseLinkNext(linkHeader) {
+export function parseLinkNext(linkHeader) {
   if (!linkHeader) return null;
   // Link header format: <url>; rel="next", <url>; rel="last"
   const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/);

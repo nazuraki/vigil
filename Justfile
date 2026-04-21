@@ -16,8 +16,16 @@ dev:
 build:
     npx tauri build
 
-# Run all checks (lint + typecheck)
-check: lint typecheck
+# Run unit tests
+test:
+    npm test
+
+# Run unit tests in watch mode
+test-watch:
+    npm run test:watch
+
+# Run all checks (lint + typecheck + tests)
+check: lint typecheck test
 
 # Lint and check formatting
 lint:
